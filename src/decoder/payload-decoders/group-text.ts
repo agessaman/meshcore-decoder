@@ -11,12 +11,12 @@ import { byteToHex, bytesToHex } from '../../utils/hex';
 export class GroupTextPayloadDecoder {
   static decode(payload: Uint8Array, options?: DecryptionOptions & { includeSegments?: boolean; segmentOffset?: number }): GroupTextPayload & { segments?: PayloadSegment[] } | null {
     try {
-      if (payload.length < 3) {
+      if (payload.length < 4) {
         const result: GroupTextPayload & { segments?: PayloadSegment[] } = {
           type: PayloadType.GroupText,
           version: PayloadVersion.Version1,
           isValid: false,
-          errors: ['GroupText payload too short (need at least channel_hash(1) + MAC(2))'],
+          errors: ['GroupText payload too short (need at least channel_hash(1) + MAC(2) + ciphertext)'],
           channelHash: '',
           cipherMac: '',
           ciphertext: '',
@@ -26,7 +26,7 @@ export class GroupTextPayloadDecoder {
         if (options?.includeSegments) {
           result.segments = [{
             name: 'Invalid GroupText Data',
-            description: 'GroupText payload too short (minimum 3 bytes required)',
+            description: 'GroupText payload too short (minimum 4 bytes required)',
             startByte: options.segmentOffset || 0,
             endByte: (options.segmentOffset || 0) + payload.length - 1,
             value: bytesToHex(payload)

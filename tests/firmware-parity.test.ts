@@ -96,6 +96,55 @@ describe('Firmware parity', () => {
     });
   });
 
+  describe('encrypted payload minimum lengths (Mesh::onRecvPacket)', () => {
+    it('rejects encrypted payloads with no ciphertext after the MAC', () => {
+      const cases: Array<[PayloadType, number]> = [
+        [PayloadType.Request, 4],
+        [PayloadType.Response, 4],
+        [PayloadType.TextMessage, 4],
+        [PayloadType.Path, 4],
+        [PayloadType.GroupText, 3],
+        [PayloadType.GroupData, 3],
+        [PayloadType.AnonRequest, 35]
+      ];
+      for (const [type, len] of cases) {
+        const short = MeshCorePacketDecoder.decode(flood(type, Buffer.alloc(len, 0x11)));
+        const ok = MeshCorePacketDecoder.decode(flood(type, Buffer.alloc(len + 1, 0x11)));
+        expect([type, short.payload.decoded?.isValid]).toEqual([type, false]);
+        expect([type, ok.payload.decoded?.isValid]).toEqual([type, true]);
+      }
+    });
+  });
+
+  describe('reserved path hash size', () => {
+    it('still decodes a zero-hop packet with the reserved hash size, marked invalid', () => {
+      const result = MeshCorePacketDecoder.decode('0DC0B891647E');
+      expect(result.isValid).toBe(false);
+      expect(result.payloadType).toBe(PayloadType.Ack);
+      expect(result.packetHash).not.toBe('');
+      expect(result.errors?.[0]).toMatch(/reserved hash size/);
+    });
+
+    it('returns an error packet instead of throwing on invalid hex', () => {
+      expect(MeshCorePacketDecoder.decode('GG').isValid).toBe(false);
+      expect(MeshCorePacketDecoder.decode('0').errors?.[0]).toMatch(/odd length/);
+      expect(MeshCorePacketDecoder.validate('ZZ').isValid).toBe(false);
+    });
+
+    it('accepts an empty payload in validate(), as Dispatcher::tryParsePacket does', () => {
+      expect(MeshCorePacketDecoder.validate('0D00').isValid).toBe(true);
+    });
+  });
+
+  describe('TRACE', () => {
+    it('does not require trailing path bytes to align to the hash size', () => {
+      const result = MeshCorePacketDecoder.decode('2600' + '01020304' + '05060708' + '01' + 'AABBCC');
+      const trace = result.payload.decoded as any;
+      expect(trace.isValid).toBe(true);
+      expect(trace.pathHashes).toEqual(['AABB']);
+    });
+  });
+
   describe('transport codes', () => {
     it('labels transport code 1 as reserved', () => {
       const structure = MeshCorePacketDecoder.analyzeStructure('0C341200000000B891647E');
@@ -151,6 +200,17 @@ describe('Firmware parity', () => {
         sender: 'alice',
         message: 'hi'
       });
+    });
+
+    it('hashes a zero-padded 32-byte secret as a 128-bit channel key', () => {
+      const padded = CHANNEL_KEY_128 + '00'.repeat(16);
+      expect(ChannelCrypto.calculateChannelHash(padded)).toBe(ChannelCrypto.calculateChannelHash(CHANNEL_KEY_128));
+
+      const plain = Buffer.concat([Buffer.from([0x10, 0x00, 0x00, 0x00, 0x00]), Buffer.from('bob: yo')]);
+      const payload = Buffer.concat([channelHash(CHANNEL_KEY_128), encryptThenMac(CHANNEL_KEY_128, plain)]);
+      const keyStore = MeshCorePacketDecoder.createKeyStore({ channelSecrets: [padded] });
+      const result = MeshCorePacketDecoder.decode(flood(PayloadType.GroupText, payload), { keyStore });
+      expect((result.payload.decoded as GroupTextPayload).decrypted?.message).toBe('yo');
     });
 
     it('rejects ciphertext that is not block-aligned', () => {

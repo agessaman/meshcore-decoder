@@ -15,12 +15,12 @@ export class TextMessagePayloadDecoder {
       // - cipher_mac (2 bytes)
       // - ciphertext (rest of payload)
       
-      if (payload.length < 4) {
+      if (payload.length < 5) {
         const result: TextMessagePayload & { segments?: PayloadSegment[] } = {
           type: PayloadType.TextMessage,
           version: PayloadVersion.Version1,
           isValid: false,
-          errors: ['TextMessage payload too short (minimum 4 bytes: dest + source + MAC)'],
+          errors: ['TextMessage payload too short (minimum 5 bytes: dest + source + MAC + ciphertext)'],
           destinationHash: '',
           sourceHash: '',
           cipherMac: '',
@@ -31,7 +31,7 @@ export class TextMessagePayloadDecoder {
         if (options?.includeSegments) {
           result.segments = [{
             name: 'Invalid TextMessage Data',
-            description: 'TextMessage payload too short (minimum 4 bytes required)',
+            description: 'TextMessage payload too short (minimum 5 bytes required)',
             startByte: options.segmentOffset || 0,
             endByte: (options.segmentOffset || 0) + payload.length - 1,
             value: bytesToHex(payload)

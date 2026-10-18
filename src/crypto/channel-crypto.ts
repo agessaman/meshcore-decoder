@@ -160,7 +160,13 @@ export class ChannelCrypto {
   }
 
   static calculateChannelHash(secretKeyHex: string): string {
-    const hash = SHA256(enc.Hex.parse(secretKeyHex));
+    // firmware stores secrets in a 32-byte buffer and hashes only the first 16 bytes
+    // when the upper half is zero (128-bit channel), see BaseChatMesh::setChannel()
+    let keyHex = secretKeyHex;
+    if (keyHex.length === 64 && /^0+$/.test(keyHex.slice(32))) {
+      keyHex = keyHex.slice(0, 32);
+    }
+    const hash = SHA256(enc.Hex.parse(keyHex));
     const hashBytes = hexToBytes(hash.toString(enc.Hex));
     return hashBytes[0].toString(16).padStart(2, '0');
   }

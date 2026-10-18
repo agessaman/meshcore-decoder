@@ -16,7 +16,9 @@ const APP_DATA_START = 100;
 export class AdvertPayloadDecoder {
   static decode(payload: Uint8Array, options?: { includeSegments?: boolean; segmentOffset?: number }): AdvertPayload & { segments?: PayloadSegment[] } | null {
     try {
-      // start of appdata section: public_key(32) + timestamp(4) + signature(64) + flags(1) = 101 bytes
+      // start of appdata section: public_key(32) + timestamp(4) + signature(64) + flags(1) = 101 bytes.
+      // Mesh::onRecvPacket() accepts 100 bytes, but AdvertDataParser then has no flags byte to read,
+      // so an advert without app data is treated as invalid here.
       if (payload.length < 101) {
         const result: AdvertPayload & { segments?: PayloadSegment[] } = {
           type: PayloadType.Advert,

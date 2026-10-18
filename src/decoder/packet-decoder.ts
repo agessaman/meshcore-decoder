@@ -66,10 +66,17 @@ export class MeshCorePacketDecoder {
     packet: DecodedPacket;
     structure: PacketStructure;
   } {
-    const bytes = hexToBytes(hexData);
+    let bytes: Uint8Array;
+    let inputError: string | undefined;
+    try {
+      bytes = hexToBytes(hexData);
+    } catch (error) {
+      bytes = new Uint8Array(0);
+      inputError = error instanceof Error ? error.message : 'Invalid hex string';
+    }
     const segments: PacketSegment[] = [];
     
-    if (bytes.length < 2) {
+    if (inputError || bytes.length < 2) {
       const errorPacket: DecodedPacket = {
         messageHash: '',
         packetHash: '',
@@ -82,7 +89,7 @@ export class MeshCorePacketDecoder {
         payload: { raw: '', decoded: null },
         totalBytes: bytes.length,
         isValid: false,
-        errors: ['Packet too short (minimum 2 bytes required)']
+        errors: [inputError || 'Packet too short (minimum 2 bytes required)']
       };
 
       const errorStructure: PacketStructure = {
@@ -195,7 +202,7 @@ export class MeshCorePacketDecoder {
       const { hashSize: pathHashSize, hopCount: pathHopCount, byteLength: pathByteLength } = this.decodePathLenByte(pathLenByte);
 
       if (pathHashSize === 4) {
-        throw new Error('Invalid path length byte: reserved hash size (bits 7:6 = 11)');
+        firmwareErrors.push('Invalid path length byte: reserved hash size (bits 7:6 = 11)');
       }
 
       if (includeStructure) {
@@ -239,7 +246,10 @@ export class MeshCorePacketDecoder {
       offset += 1;
 
       if (bytes.length < offset + pathByteLength) {
-        throw new Error('Packet too short for path data');
+        // with the reserved hash size the path length is meaningless, so report that instead
+        throw new Error(pathHashSize === 4
+          ? 'Invalid path length byte: reserved hash size (bits 7:6 = 11)'
+          : 'Packet too short for path data');
       }
       if (pathByteLength > MAX_PATH_SIZE) {
         firmwareErrors.push(`Path too long (${pathByteLength} bytes, maximum ${MAX_PATH_SIZE})`);
@@ -574,7 +584,12 @@ export class MeshCorePacketDecoder {
    * Validate packet format without full decoding
    */
   static validate(hexData: string): ValidationResult {
-    const bytes = hexToBytes(hexData);
+    let bytes: Uint8Array;
+    try {
+      bytes = hexToBytes(hexData);
+    } catch (error) {
+      return { isValid: false, errors: [error instanceof Error ? error.message : 'Invalid hex string'] };
+    }
     const errors: string[] = [];
 
     if (bytes.length < 2) {
@@ -619,10 +634,8 @@ export class MeshCorePacketDecoder {
         offset += byteLength;
       }
 
-      // check if we have payload data
-      if (offset >= bytes.length) {
-        errors.push('No payload data found');
-      } else if (bytes.length - offset > MAX_PACKET_PAYLOAD) {
+      // Dispatcher::tryParsePacket() accepts an empty payload; only an oversized one is rejected
+      if (bytes.length - offset > MAX_PACKET_PAYLOAD) {
         errors.push(`Payload too long (${bytes.length - offset} bytes, maximum ${MAX_PACKET_PAYLOAD})`);
       }
 

@@ -448,9 +448,9 @@ export class MeshCorePacketDecoder {
       }
 
       // "too short" segments for an empty payload would have endByte < startByte
-      for (let i = payloadSegments.length - 1; i >= 0; i--) {
-        if (payloadSegments[i].endByte < payloadSegments[i].startByte) payloadSegments.splice(i, 1);
-      }
+      const validPayloadSegments = this.withoutEmptySegments(payloadSegments);
+      payloadSegments.length = 0;
+      payloadSegments.push(...validPayloadSegments);
 
       // if no segments were generated and we need structure, show basic payload info
       if (includeStructure && payloadSegments.length === 0 && bytes.length > offset) {
@@ -562,20 +562,21 @@ export class MeshCorePacketDecoder {
           // Update the payload with signature verification results
           result.packet.payload.decoded = verifiedAdvert;
           
-          // If the advertisement signature is invalid, mark the whole packet as invalid
-          if (!verifiedAdvert.isValid) {
+          // A forged advert signature marks the whole packet invalid (other payload problems
+          // stay on payload.decoded, consistent with decode())
+          if (verifiedAdvert.signatureValid === false) {
             result.packet.isValid = false;
             result.packet.errors = [
               ...(result.packet.errors || []),
-              ...(verifiedAdvert.errors || ['Invalid advertisement signature'])
+              verifiedAdvert.signatureError || 'Invalid advertisement signature'
             ];
           }
           
           // Update structure segments if needed
           if (includeStructure && verifiedAdvert.segments) {
-            result.structure.payload.segments = verifiedAdvert.segments;
-            delete verifiedAdvert.segments;
+            result.structure.payload.segments = this.withoutEmptySegments(verifiedAdvert.segments);
           }
+          delete verifiedAdvert.segments;
         }
       } catch (error) {
         console.error('Signature verification failed:', error);
@@ -702,6 +703,10 @@ export class MeshCorePacketDecoder {
     }
     
     return numberToHex(hash, 8);
+  }
+
+  private static withoutEmptySegments(segments: PayloadSegment[]): PayloadSegment[] {
+    return segments.filter(segment => segment.endByte >= segment.startByte);
   }
 
   /**

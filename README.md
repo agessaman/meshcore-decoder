@@ -139,7 +139,7 @@ The decoder follows the MeshCore firmware (`src/Packet.*`, `src/Mesh.cpp`, `src/
 
 - `packetHash` is computed exactly like `Packet::calculatePacketHash()` (SHA-256 over the payload type, the `path_len` field for TRACE packets, and the payload; first 8 bytes). `messageHash` is kept for backwards compatibility but is specific to this library.
 - Packets that firmware `Dispatcher::tryParsePacket()` would drop are still decoded but marked `isValid: false` with an explanation in `errors`: payload version above 1, the reserved path hash size, path longer than 64 bytes, or payload longer than 184 bytes.
-- Payload-level problems (for example an encrypted payload with no ciphertext, which `Mesh::onRecvPacket()` drops) are reported on `payload.decoded.isValid` / `payload.decoded.errors`.
+- Payload-level problems (for example an encrypted payload with no ciphertext, which `Mesh::onRecvPacket()` drops) are reported on `payload.decoded.isValid` / `payload.decoded.errors`. The one exception is a forged advert signature: `decodeWithVerification()` also marks the packet invalid.
 - The firmware only acts on CONTROL discovery packets (sub-types with bit 7 set) when they arrive zero-hop over a direct route, and on GRP_TXT messages whose text type is plain (0). The decoder still decodes other cases so they can be inspected.
 - `path_len` encodes the per-hop hash size (1, 2 or 3 bytes) in bits 6-7 and the hop count in bits 0-5; `pathHashSize` reports the size.
 - PATH payloads are encrypted like text messages. The decoder exposes the destination/source hashes, MAC and ciphertext; use `PathPayloadDecoder.parsePlaintext()` to parse a decrypted returned path.

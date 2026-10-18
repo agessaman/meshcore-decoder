@@ -180,6 +180,17 @@ describe('Firmware parity', () => {
       expect((withoutKey.payload.decoded as GroupDataPayload).decrypted).toBeUndefined();
     });
 
+    it('marks authenticated GRP_DATA with an impossible data_len as invalid', () => {
+      const plain = Buffer.alloc(16);
+      plain[2] = 14; // only 13 bytes follow the 3-byte header
+      const payload = Buffer.concat([channelHash(CHANNEL_KEY_128), encryptThenMac(CHANNEL_KEY_128, plain)]);
+      const keyStore = MeshCorePacketDecoder.createKeyStore({ channelSecrets: [CHANNEL_KEY_128] });
+      const groupData = MeshCorePacketDecoder.decode(flood(PayloadType.GroupData, payload), { keyStore }).payload.decoded as GroupDataPayload;
+      expect(groupData.isValid).toBe(false);
+      expect(groupData.decrypted).toBeUndefined();
+      expect(groupData.errors?.[0]).toMatch(/exceeds available/);
+    });
+
     it('rejects decrypted data whose data_len exceeds the available bytes', () => {
       const plain = Buffer.alloc(16);
       plain[2] = 14; // only 13 bytes follow the 3-byte header
@@ -282,6 +293,24 @@ describe('Firmware parity', () => {
       const advert = result.payload.decoded as AdvertPayload;
       expect(advert.signatureValid).toBe(true);
       expect(advert.appData.name).toBe('A'.repeat(31));
+    });
+
+    it('keeps non-signature advert problems off packet.isValid in decodeWithVerification()', async () => {
+      const hex = '1100' + '00'.repeat(100) + '11'; // truncated location
+      const result = await MeshCorePacketDecoder.decodeWithVerification(hex);
+      expect(result.isValid).toBe(true);
+      expect((result.payload.decoded as AdvertPayload).isValid).toBe(false);
+
+      // valid public key, but the signature does not match
+      const forgedHex = '1100' + keyPair.publicKey + '00'.repeat(68) + '81' + '41';
+      const forged = await MeshCorePacketDecoder.decodeWithVerification(forgedHex);
+      expect((forged.payload.decoded as AdvertPayload).signatureValid).toBe(false);
+      expect(forged.isValid).toBe(false);
+    });
+
+    it('does not restore negative segment ranges in verified structure analysis', async () => {
+      const structure = await MeshCorePacketDecoder.analyzeStructureWithVerification('1100');
+      expect(structure.payload.segments.every(s => s.endByte >= s.startByte)).toBe(true);
     });
 
     it('flags truncated location data as invalid', () => {

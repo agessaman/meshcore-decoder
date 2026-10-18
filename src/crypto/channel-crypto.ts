@@ -142,12 +142,12 @@ export class ChannelCrypto {
     const bytes = result.data;
     // firmware BaseChatMesh::onGroupDataRecv(): data_type(uint16 LE) + data_len(1) + data
     if (bytes.length < 3) {
-      return { success: false, error: 'Decrypted group data too short' };
+      return { success: false, authenticated: true, error: 'Decrypted group data too short' };
     }
     const dataType = bytes[0] | (bytes[1] << 8);
     const dataLength = bytes[2];
     if (dataLength > bytes.length - 3) {
-      return { success: false, error: `Group data length ${dataLength} exceeds available ${bytes.length - 3} bytes` };
+      return { success: false, authenticated: true, error: `Group data length ${dataLength} exceeds available ${bytes.length - 3} bytes` };
     }
     return {
       success: true,

@@ -97,6 +97,12 @@ export class GroupDataPayloadDecoder {
             groupData.decrypted = decryptionResult.data;
             break;
           }
+          if (decryptionResult.authenticated) {
+            // authenticated but malformed: firmware BaseChatMesh::onGroupDataRecv() drops it
+            groupData.isValid = false;
+            groupData.errors = [...(groupData.errors || []), decryptionResult.error || 'Malformed group data'];
+            break;
+          }
         }
       }
 

@@ -78,11 +78,6 @@ program
           showPayloadDetails(packet.payload.decoded);
         }
         
-        // Exit with error code if packet is invalid
-        if (!packet.isValid) {
-          process.exit(1);
-        }
-        
         // Show structure if requested
         if (options.structure) {
           const structure = await MeshCorePacketDecoder.analyzeStructureWithVerification(cleanHex, { keyStore });
@@ -104,6 +99,11 @@ program
             });
           }
         }
+
+        // Exit with error code if packet is invalid
+        if (!packet.isValid) {
+          process.exit(1);
+        }
       }
     } catch (error) {
       console.error(chalk.red('Error:'), (error as Error).message);
@@ -112,6 +112,11 @@ program
   });
 
 function showPayloadDetails(payload: any): void {
+  if (!payload.isValid) {
+    console.log(chalk.red('❌ Invalid payload'));
+    (payload.errors || []).forEach((error: string) => console.log(chalk.red(`   ${error}`)));
+  }
+
   switch (payload.type) {
     case PayloadType.Advert:
       const advert = payload as AdvertPayload;

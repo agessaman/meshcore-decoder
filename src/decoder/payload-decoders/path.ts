@@ -3,6 +3,7 @@
 
 import { PathPayload, PathPlaintext } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion } from '../../types/enums';
 import { byteToHex, bytesToHex } from '../../utils/hex';
 
@@ -97,10 +98,12 @@ export class PathPayloadDecoder {
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const result: PathPayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.Path,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         destinationHash,
         sourceHash,
         cipherMac,

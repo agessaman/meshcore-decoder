@@ -3,6 +3,7 @@
 
 import { GroupTextPayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion } from '../../types/enums';
 import { DecryptionOptions } from '../../types/crypto';
 import { ChannelCrypto } from '../../crypto/channel-crypto';
@@ -78,10 +79,12 @@ export class GroupTextPayloadDecoder {
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const groupText: GroupTextPayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.GroupText,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         channelHash,
         cipherMac,
         ciphertext,

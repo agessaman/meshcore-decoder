@@ -144,7 +144,8 @@ The decoder follows the MeshCore firmware (`src/Packet.*`, `src/Mesh.cpp`, `src/
 - `path_len` encodes the per-hop hash size (1, 2 or 3 bytes) in bits 6-7 and the hop count in bits 0-5; `pathHashSize` reports the size.
 - PATH payloads are encrypted like text messages. The decoder exposes the destination/source hashes, MAC and ciphertext; use `PathPayloadDecoder.parsePlaintext()` to parse a decrypted returned path.
 - Advert signatures cover only the first 32 bytes of app data (`MAX_ADVERT_DATA_SIZE`), and any bytes past that are not part of the node name. Device roles outside 1-4 are reported as-is rather than as Chat Node.
-- 128-bit and 256-bit channel secrets are both supported for GroupText and GroupData decryption.
+- 128-bit and 256-bit channel secrets are both supported for GroupText and GroupData decryption. A 32-byte secret whose last 16 bytes are zero is matched under both the 16-byte and 32-byte channel hash, since the firmware uses either depending on how the channel was configured.
+- Encrypted payloads whose ciphertext is not a whole number of 16-byte AES blocks are marked invalid, as `Utils::MACThenDecrypt()` rejects them.
 
 ## Decryption Support
 
@@ -225,9 +226,9 @@ The decoder already extracts these:
 
 - **`transportCodes`** on `DecodedPacket`: `[number, number]` when present.  
   - `transportCodes[0]`: region/scope for this packet (repeaters match this to a named region).  
-  - `transportCodes[1]`: sender’s return/home region (used for replies).
+  - `transportCodes[1]`: reserved by the current firmware (it may later identify the sender’s home region for replies).
 
-Use `packet.transportCodes` for group chat (and any other) packets that use transport routing. With `analyzeStructure()`, the main segments show "Region/Scope (transport code 0)" and "Return region (transport code 1)" when present.
+Use `packet.transportCodes` for group chat (and any other) packets that use transport routing. With `analyzeStructure()`, the main segments show "Region/Scope (transport code 0)" and "Reserved (transport code 1)" when present.
 
 **Calculating the region code from a region name**
 

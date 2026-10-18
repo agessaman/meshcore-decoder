@@ -447,6 +447,11 @@ export class MeshCorePacketDecoder {
         }
       }
 
+      // "too short" segments for an empty payload would have endByte < startByte
+      for (let i = payloadSegments.length - 1; i >= 0; i--) {
+        if (payloadSegments[i].endByte < payloadSegments[i].startByte) payloadSegments.splice(i, 1);
+      }
+
       // if no segments were generated and we need structure, show basic payload info
       if (includeStructure && payloadSegments.length === 0 && bytes.length > offset) {
         payloadSegments.push({

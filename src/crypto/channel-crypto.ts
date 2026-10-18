@@ -160,14 +160,24 @@ export class ChannelCrypto {
   }
 
   static calculateChannelHash(secretKeyHex: string): string {
-    // firmware stores secrets in a 32-byte buffer and hashes only the first 16 bytes
-    // when the upper half is zero (128-bit channel), see BaseChatMesh::setChannel()
-    let keyHex = secretKeyHex;
-    if (keyHex.length === 64 && /^0+$/.test(keyHex.slice(32))) {
-      keyHex = keyHex.slice(0, 32);
-    }
-    const hash = SHA256(enc.Hex.parse(keyHex));
+    const hash = SHA256(enc.Hex.parse(secretKeyHex));
     const hashBytes = hexToBytes(hash.toString(enc.Hex));
     return hashBytes[0].toString(16).padStart(2, '0');
   }
+
+  /**
+   * All channel hashes a secret may appear under on air. Firmware hashes the decoded
+   * key length in BaseChatMesh::addChannel(), but BaseChatMesh::setChannel() hashes only
+   * the first 16 bytes of a 32-byte buffer whose upper half is zero. A zero-padded
+   * 32-byte secret is therefore registered under both hashes.
+   */
+  static calculateChannelHashes(secretKeyHex: string): string[] {
+    const hashes = [this.calculateChannelHash(secretKeyHex)];
+    if (secretKeyHex.length === 64 && /^0+$/.test(secretKeyHex.slice(32))) {
+      const shortHash = this.calculateChannelHash(secretKeyHex.slice(0, 32));
+      if (shortHash !== hashes[0]) hashes.push(shortHash);
+    }
+    return hashes;
+  }
+
 }

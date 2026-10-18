@@ -3,6 +3,7 @@
 
 import { GroupDataPayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion } from '../../types/enums';
 import { DecryptionOptions } from '../../types/crypto';
 import { ChannelCrypto } from '../../crypto/channel-crypto';
@@ -77,10 +78,12 @@ export class GroupDataPayloadDecoder {
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const groupData: GroupDataPayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.GroupData,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         channelHash,
         cipherMac,
         ciphertext,

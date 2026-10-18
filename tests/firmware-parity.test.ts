@@ -96,8 +96,8 @@ describe('Firmware parity', () => {
     });
   });
 
-  describe('encrypted payload minimum lengths (Mesh::onRecvPacket)', () => {
-    it('rejects encrypted payloads with no ciphertext after the MAC', () => {
+  describe('encrypted payload minimum lengths (Mesh::onRecvPacket, Utils::MACThenDecrypt)', () => {
+    it('rejects encrypted payloads without whole ciphertext blocks after the MAC', () => {
       const cases: Array<[PayloadType, number]> = [
         [PayloadType.Request, 4],
         [PayloadType.Response, 4],
@@ -109,8 +109,11 @@ describe('Firmware parity', () => {
       ];
       for (const [type, len] of cases) {
         const short = MeshCorePacketDecoder.decode(flood(type, Buffer.alloc(len, 0x11)));
-        const ok = MeshCorePacketDecoder.decode(flood(type, Buffer.alloc(len + 1, 0x11)));
+        const unaligned = MeshCorePacketDecoder.decode(flood(type, Buffer.alloc(len + 1, 0x11)));
+        const ok = MeshCorePacketDecoder.decode(flood(type, Buffer.alloc(len + 16, 0x11)));
         expect([type, short.payload.decoded?.isValid]).toEqual([type, false]);
+        // Utils::MACThenDecrypt() also requires whole AES blocks
+        expect([type, unaligned.payload.decoded?.isValid]).toEqual([type, false]);
         expect([type, ok.payload.decoded?.isValid]).toEqual([type, true]);
       }
     });
@@ -133,6 +136,11 @@ describe('Firmware parity', () => {
 
     it('accepts an empty payload in validate(), as Dispatcher::tryParsePacket does', () => {
       expect(MeshCorePacketDecoder.validate('0D00').isValid).toBe(true);
+    });
+
+    it('does not emit payload segments with negative ranges for an empty payload', () => {
+      const structure = MeshCorePacketDecoder.analyzeStructure('2900');
+      expect(structure.payload.segments.every(s => s.endByte >= s.startByte)).toBe(true);
     });
   });
 
@@ -202,9 +210,13 @@ describe('Firmware parity', () => {
       });
     });
 
-    it('hashes a zero-padded 32-byte secret as a 128-bit channel key', () => {
+    it('matches a zero-padded 32-byte secret under both the 16- and 32-byte channel hash', () => {
       const padded = CHANNEL_KEY_128 + '00'.repeat(16);
-      expect(ChannelCrypto.calculateChannelHash(padded)).toBe(ChannelCrypto.calculateChannelHash(CHANNEL_KEY_128));
+      expect(ChannelCrypto.calculateChannelHashes(padded)).toEqual([
+        ChannelCrypto.calculateChannelHash(padded),
+        ChannelCrypto.calculateChannelHash(CHANNEL_KEY_128)
+      ]);
+      expect(ChannelCrypto.calculateChannelHashes(CHANNEL_KEY_256)).toHaveLength(1);
 
       const plain = Buffer.concat([Buffer.from([0x10, 0x00, 0x00, 0x00, 0x00]), Buffer.from('bob: yo')]);
       const payload = Buffer.concat([channelHash(CHANNEL_KEY_128), encryptThenMac(CHANNEL_KEY_128, plain)]);

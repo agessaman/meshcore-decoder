@@ -3,6 +3,7 @@
 
 import { RequestPayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion, RequestType } from '../../types/enums';
 import { bytesToHex } from '../../utils/hex';
 
@@ -105,10 +106,12 @@ export class RequestPayloadDecoder {
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const result: RequestPayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.Request,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         timestamp: 0, // Encrypted, cannot be parsed without decryption
         requestType: RequestType.GetStats, // Encrypted, cannot be determined without decryption
         requestData: '',

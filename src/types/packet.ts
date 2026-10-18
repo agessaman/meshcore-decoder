@@ -4,7 +4,8 @@ import { PayloadData } from './payloads';
 // main decoded packet interface
 export interface DecodedPacket {
   // packet metadata
-  messageHash: string;
+  messageHash: string; // decoder-specific 32-bit hash (kept for backwards compatibility)
+  packetHash: string; // firmware Packet::calculatePacketHash(): first 8 bytes of SHA256, hex
   
   // header information
   routeType: RouteType;
@@ -14,6 +15,7 @@ export interface DecodedPacket {
   // transport and routing
   transportCodes?: [number, number];
   pathLength: number;
+  pathHashSize: number;
   path: string[] | null;
   
   // payload data
@@ -34,6 +36,7 @@ export interface PacketStructure {
   totalBytes: number;
   rawHex: string;
   messageHash: string;
+  packetHash: string;
   payload: {
     segments: PayloadSegment[];
     hex: string;

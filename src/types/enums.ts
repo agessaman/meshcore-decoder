@@ -1,4 +1,5 @@
-// Reference: https://github.com/meshcore-dev/MeshCore/blob/main/docs/packet_structure.md
+// Reference: https://github.com/meshcore-dev/MeshCore/blob/main/docs/packet_format.md
+// Firmware: src/Packet.h, src/helpers/AdvertDataHelpers.h, src/helpers/TxtDataHelpers.h
 
 export enum RouteType {
   TransportFlood = 0x00,
@@ -51,10 +52,31 @@ export enum AdvertFlags {
   HasName = 0x80
 }
 
+// REQ_TYPE_* values (first byte after the timestamp in a decrypted REQUEST)
 export enum RequestType {
   GetStats = 0x01,
   Keepalive = 0x02, // deprecated
   GetTelemetryData = 0x03,
   GetMinMaxAvgData = 0x04,
-  GetAccessList = 0x05
+  GetAccessList = 0x05,
+  GetNeighbours = 0x06,
+  GetOwnerInfo = 0x07,
+  Subscribe = 0x08,
+  Unsubscribe = 0x09
+}
+
+// ANON_REQ_TYPE_* values (byte 4 of a decrypted ANON_REQ sent to a repeater).
+// A value of 0x00 or a printable character means the request is a login (password).
+export enum AnonRequestType {
+  Regions = 0x01,
+  OwnerInfo = 0x02,
+  Basic = 0x03 // remote clock and status
+}
+
+// TXT_TYPE_* values (upper 6 bits of the txt_type/attempt byte in decrypted text messages)
+export enum TextType {
+  Plain = 0x00,
+  CliData = 0x01,
+  SignedPlain = 0x02,
+  CliCommand = 0x03
 }

@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Michael Hart: https://github.com/michaelhart/meshcore-decoder
 // MIT License
 
-import { RouteType, PayloadType, PayloadVersion, DeviceRole, RequestType, ControlSubType } from '../types/enums';
+import { RouteType, PayloadType, PayloadVersion, DeviceRole, RequestType, ControlSubType, AnonRequestType, TextType } from '../types/enums';
 
 /**
  * Get human-readable name for RouteType enum value
@@ -75,7 +75,36 @@ export function getRequestTypeName(requestType: RequestType): string {
     case RequestType.GetTelemetryData: return 'Get Telemetry Data';
     case RequestType.GetMinMaxAvgData: return 'Get Min/Max/Avg Data';
     case RequestType.GetAccessList: return 'Get Access List';
+    case RequestType.GetNeighbours: return 'Get Neighbours';
+    case RequestType.GetOwnerInfo: return 'Get Owner Info';
+    case RequestType.Subscribe: return 'Subscribe';
+    case RequestType.Unsubscribe: return 'Unsubscribe';
     default: return `Unknown (${requestType})`;
+  }
+}
+
+/**
+ * Get human-readable name for AnonRequestType enum value
+ */
+export function getAnonRequestTypeName(requestType: AnonRequestType): string {
+  switch (requestType) {
+    case AnonRequestType.Regions: return 'Regions';
+    case AnonRequestType.OwnerInfo: return 'Owner Info';
+    case AnonRequestType.Basic: return 'Clock/Status';
+    default: return `Unknown (${requestType})`;
+  }
+}
+
+/**
+ * Get human-readable name for TextType enum value
+ */
+export function getTextTypeName(textType: TextType): string {
+  switch (textType) {
+    case TextType.Plain: return 'Plain Text';
+    case TextType.CliData: return 'CLI Data';
+    case TextType.SignedPlain: return 'Signed Plain Text';
+    case TextType.CliCommand: return 'CLI Command';
+    default: return `Unknown (${textType})`;
   }
 }
 

@@ -3,6 +3,7 @@
 
 import { RequestPayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion, RequestType } from '../../types/enums';
 import { bytesToHex } from '../../utils/hex';
 
@@ -15,12 +16,12 @@ export class RequestPayloadDecoder {
       // - cipher MAC (2 bytes)
       // - ciphertext (rest of payload) - contains encrypted timestamp, request type, and request data
       
-      if (payload.length < 4) {
+      if (payload.length < 5) {
         const result: RequestPayload & { segments?: PayloadSegment[] } = {
           type: PayloadType.Request,
           version: PayloadVersion.Version1,
           isValid: false,
-          errors: ['Request payload too short (minimum 4 bytes: dest hash + source hash + MAC)'],
+          errors: ['Request payload too short (minimum 5 bytes: dest hash + source hash + MAC + ciphertext)'],
           timestamp: 0,
           requestType: RequestType.GetStats,
           requestData: '',
@@ -33,7 +34,7 @@ export class RequestPayloadDecoder {
         if (options?.includeSegments) {
           result.segments = [{
             name: 'Invalid Request Data',
-            description: 'Request payload too short (minimum 4 bytes required: 1 for dest hash + 1 for source hash + 2 for MAC)',
+            description: 'Request payload too short (minimum 5 bytes required: 1 for dest hash + 1 for source hash + 2 for MAC + ciphertext)',
             startByte: options.segmentOffset || 0,
             endByte: (options.segmentOffset || 0) + payload.length - 1,
             value: bytesToHex(payload)
@@ -105,10 +106,12 @@ export class RequestPayloadDecoder {
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const result: RequestPayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.Request,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         timestamp: 0, // Encrypted, cannot be parsed without decryption
         requestType: RequestType.GetStats, // Encrypted, cannot be determined without decryption
         requestData: '',

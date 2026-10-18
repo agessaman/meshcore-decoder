@@ -20,10 +20,14 @@ export interface AdvertPayload extends BasePayload {
     deviceRole: DeviceRole;
     hasLocation: boolean;
     hasName: boolean;
+    hasFeature1: boolean;
+    hasFeature2: boolean;
     location?: {
       latitude: number;
       longitude: number;
     };
+    feature1?: number; // uint16, reserved for future use
+    feature2?: number; // uint16, reserved for future use
     name?: string;
   };
 }
@@ -32,6 +36,7 @@ export interface TracePayload extends BasePayload {
   traceTag: string;
   authCode: number;
   flags: number;
+  pathHashSize: number;
   pathHashes: string[];
   snrValues?: number[]; // from path field for TRACE packets
 }
@@ -43,9 +48,23 @@ export interface GroupTextPayload extends BasePayload {
   ciphertextLength: number;
   decrypted?: {
     timestamp: number;
-    flags: number;
+    flags: number; // raw txt_type/attempt byte
+    txtType: number; // upper 6 bits of flags (see TextType)
+    attempt: number; // lower 2 bits of flags
     sender?: string;
     message: string;
+  };
+}
+
+export interface GroupDataPayload extends BasePayload {
+  channelHash: string;
+  cipherMac: string;
+  ciphertext: string; // raw encrypted data as hex
+  ciphertextLength: number;
+  decrypted?: {
+    dataType: number; // uint16, see MeshCore docs/number_allocations.md
+    dataLength: number;
+    data: string; // hex
   };
 }
 
@@ -95,11 +114,31 @@ export interface AckPayload extends BasePayload {
   checksum: string;
 }
 
+// PATH payloads are encrypted like TXT_MSG/REQ/RESPONSE. The returned path and
+// bundled extra payload only become visible once the ciphertext is decrypted.
 export interface PathPayload extends BasePayload {
-  pathLength: number;
+  destinationHash: string;
+  sourceHash: string;
+  cipherMac: string;
+  ciphertext: string; // raw encrypted data as hex
+  ciphertextLength: number;
+  decrypted?: PathPlaintext;
+}
+
+export interface PathPlaintext {
+  pathLength: number; // hop count
+  pathHashSize: number;
   pathHashes: string[];
-  extraType: number;
-  extraData: string;
+  extraType: number; // lower 4 bits of the extra type byte (a PayloadType, or 0x0F as a dummy)
+  extraData: string; // hex, may include zero padding
+}
+
+// MULTIPART: first byte is (remaining << 4) | inner payload type, followed by the inner payload
+export interface MultipartPayload extends BasePayload {
+  remaining: number; // packets still to be sent after this one
+  innerType: PayloadType;
+  innerData: string; // hex
+  ackChecksum?: string; // when innerType is Ack
 }
 
 export interface ResponsePayload extends BasePayload {
@@ -151,10 +190,12 @@ export type PayloadData =
   | AdvertPayload 
   | TracePayload 
   | GroupTextPayload 
+  | GroupDataPayload
   | RequestPayload 
   | TextMessagePayload 
   | AnonRequestPayload 
   | AckPayload 
   | PathPayload
   | ResponsePayload
+  | MultipartPayload
   | ControlPayload;

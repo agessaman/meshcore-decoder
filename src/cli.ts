@@ -3,7 +3,7 @@
 import { MeshCorePacketDecoder } from './decoder/packet-decoder';
 import { PayloadType, DeviceRole } from './types/enums';
 import { getRouteTypeName, getPayloadTypeName, getDeviceRoleName } from './utils/enum-names';
-import { AdvertPayload, GroupTextPayload, TracePayload } from './types/payloads';
+import { AdvertPayload, GroupTextPayload, GroupDataPayload, TracePayload, PathPayload, MultipartPayload } from './types/payloads';
 import { Utils } from './index';
 import { program } from 'commander';
 import chalk from 'chalk';
@@ -60,9 +60,13 @@ program
         }
         
         console.log(`${chalk.bold('Message Hash:')} ${packet.messageHash}`);
+        console.log(`${chalk.bold('Packet Hash:')} ${packet.packetHash}`);
         console.log(`${chalk.bold('Route Type:')} ${getRouteTypeName(packet.routeType)}`);
         console.log(`${chalk.bold('Payload Type:')} ${getPayloadTypeName(packet.payloadType)}`);
         console.log(`${chalk.bold('Total Bytes:')} ${packet.totalBytes}`);
+        if (packet.transportCodes) {
+          console.log(`${chalk.bold('Transport Codes:')} ${packet.transportCodes.map(c => '0x' + c.toString(16).padStart(4, '0')).join(', ')}`);
+        }
         
         if (packet.path && packet.path.length > 0) {
           console.log(`${chalk.bold('Path:')} ${packet.path.join(' → ')}`);
@@ -72,11 +76,6 @@ program
         if (packet.payload.decoded) {
           console.log(chalk.cyan('\n=== Payload Details ==='));
           showPayloadDetails(packet.payload.decoded);
-        }
-        
-        // Exit with error code if packet is invalid
-        if (!packet.isValid) {
-          process.exit(1);
         }
         
         // Show structure if requested
@@ -100,6 +99,11 @@ program
             });
           }
         }
+
+        // Exit with error code if packet is invalid
+        if (!packet.isValid) {
+          process.exit(1);
+        }
       }
     } catch (error) {
       console.error(chalk.red('Error:'), (error as Error).message);
@@ -108,6 +112,11 @@ program
   });
 
 function showPayloadDetails(payload: any): void {
+  if (!payload.isValid) {
+    console.log(chalk.red('❌ Invalid payload'));
+    (payload.errors || []).forEach((error: string) => console.log(chalk.red(`   ${error}`)));
+  }
+
   switch (payload.type) {
     case PayloadType.Advert:
       const advert = payload as AdvertPayload;
@@ -151,6 +160,34 @@ function showPayloadDetails(payload: any): void {
       }
       break;
       
+    case PayloadType.GroupData:
+      const groupData = payload as GroupDataPayload;
+      console.log(`${chalk.bold('Channel Hash:')} ${groupData.channelHash}`);
+      if (groupData.decrypted) {
+        console.log(chalk.green('🔓 Decrypted Datagram:'));
+        console.log(`${chalk.bold('Data Type:')} 0x${groupData.decrypted.dataType.toString(16).padStart(4, '0')}`);
+        console.log(`${chalk.bold('Data:')} ${groupData.decrypted.data || '(empty)'}`);
+      } else {
+        console.log(chalk.yellow('🔒 Encrypted (no key available)'));
+      }
+      break;
+
+    case PayloadType.Path:
+      const pathPayload = payload as PathPayload;
+      console.log(`${chalk.bold('Destination Hash:')} ${pathPayload.destinationHash}`);
+      console.log(`${chalk.bold('Source Hash:')} ${pathPayload.sourceHash}`);
+      console.log(chalk.yellow('🔒 Encrypted returned path'));
+      break;
+
+    case PayloadType.Multipart:
+      const multipart = payload as MultipartPayload;
+      console.log(`${chalk.bold('Inner Type:')} ${getPayloadTypeName(multipart.innerType)}`);
+      console.log(`${chalk.bold('Remaining:')} ${multipart.remaining}`);
+      if (multipart.ackChecksum) {
+        console.log(`${chalk.bold('ACK Checksum:')} ${multipart.ackChecksum}`);
+      }
+      break;
+
     case PayloadType.Trace:
       const trace = payload as TracePayload;
       console.log(`${chalk.bold('Trace Tag:')} ${trace.traceTag}`);

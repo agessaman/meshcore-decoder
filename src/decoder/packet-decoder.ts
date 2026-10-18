@@ -17,6 +17,14 @@ import { AckPayloadDecoder } from './payload-decoders/ack';
 import { PathPayloadDecoder } from './payload-decoders/path';
 import { TextMessagePayloadDecoder } from './payload-decoders/text-message';
 import { ControlPayloadDecoder } from './payload-decoders/control';
+import { GroupDataPayloadDecoder } from './payload-decoders/group-data';
+import { MultipartPayloadDecoder } from './payload-decoders/multipart';
+import { SHA256, enc } from 'crypto-js';
+
+// firmware limits (src/MeshCore.h)
+const MAX_PATH_SIZE = 64;
+const MAX_PACKET_PAYLOAD = 184;
+const MAX_HASH_SIZE = 8;
 
 export class MeshCorePacketDecoder {
   /**
@@ -58,21 +66,30 @@ export class MeshCorePacketDecoder {
     packet: DecodedPacket;
     structure: PacketStructure;
   } {
-    const bytes = hexToBytes(hexData);
+    let bytes: Uint8Array;
+    let inputError: string | undefined;
+    try {
+      bytes = hexToBytes(hexData);
+    } catch (error) {
+      bytes = new Uint8Array(0);
+      inputError = error instanceof Error ? error.message : 'Invalid hex string';
+    }
     const segments: PacketSegment[] = [];
     
-    if (bytes.length < 2) {
+    if (inputError || bytes.length < 2) {
       const errorPacket: DecodedPacket = {
         messageHash: '',
+        packetHash: '',
         routeType: RouteType.Flood,
         payloadType: PayloadType.RawCustom,
         payloadVersion: PayloadVersion.Version1,
         pathLength: 0,
+        pathHashSize: 1,
         path: null,
         payload: { raw: '', decoded: null },
         totalBytes: bytes.length,
         isValid: false,
-        errors: ['Packet too short (minimum 2 bytes required)']
+        errors: [inputError || 'Packet too short (minimum 2 bytes required)']
       };
 
       const errorStructure: PacketStructure = {
@@ -80,6 +97,7 @@ export class MeshCorePacketDecoder {
         totalBytes: bytes.length,
         rawHex: hexData.toUpperCase(),
         messageHash: '',
+        packetHash: '',
         payload: {
           segments: [],
           hex: '',
@@ -134,6 +152,13 @@ export class MeshCorePacketDecoder {
       }
       offset = 1;
 
+      // conditions under which firmware Dispatcher::tryParsePacket() drops the packet;
+      // the packet is still decoded as far as possible but marked invalid
+      const firmwareErrors: string[] = [];
+      if (payloadVersion > PayloadVersion.Version1) {
+        firmwareErrors.push(`Unsupported payload version ${payloadVersion + 1} (firmware only accepts version 1)`);
+      }
+
       // handle transport codes
       let transportCodes: [number, number] | undefined;
       if (routeType === RouteType.TransportFlood || routeType === RouteType.TransportDirect) {
@@ -145,30 +170,52 @@ export class MeshCorePacketDecoder {
         transportCodes = [code1, code2];
 
         if (includeStructure) {
-          const transportCode = (bytes[offset]) | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24);
+          // transport_codes[0] is the region scope: HMAC of the payload keyed by the region key
+          // (0 = unscoped/wildcard). transport_codes[1] is reserved in the current firmware.
           segments.push({
-            name: 'Transport Code',
-            description: 'Used for Direct/Response routing',
+            name: 'Region/Scope (transport code 0)',
+            description: code1 === 0
+              ? 'Region scope: 0 (unscoped, matches the wildcard region)'
+              : 'Region scope for this packet (repeaters match this to named regions, e.g. #Europe)',
             startByte: offset,
+            endByte: offset + 1,
+            value: `0x${(bytes[offset] | (bytes[offset + 1] << 8)).toString(16).padStart(4, '0')} (${code1})`
+          });
+          segments.push({
+            name: 'Reserved (transport code 1)',
+            description: 'Reserved by the firmware (may later identify the sender\'s home region for replies)',
+            startByte: offset + 2,
             endByte: offset + 3,
-            value: `0x${transportCode.toString(16).padStart(8, '0')}`
+            value: `0x${(bytes[offset + 2] | (bytes[offset + 3] << 8)).toString(16).padStart(4, '0')} (${code2})`
           });
         }
         offset += 4;
       }
 
-      // parse path
+      // parse path length byte (encodes hash size and hop count)
+      // Bits 7:6 = hash size selector: (path_len >> 6) + 1 = 1, 2, or 3 bytes per hop
+      // Bits 5:0 = hop count (0-63)
       if (bytes.length < offset + 1) {
         throw new Error('Packet too short for path length');
       }
-      const pathLength = bytes[offset];
+      const pathLenByte = bytes[offset];
+      const { hashSize: pathHashSize, hopCount: pathHopCount, byteLength: pathByteLength } = this.decodePathLenByte(pathLenByte);
+
+      if (pathHashSize === 4) {
+        firmwareErrors.push('Invalid path length byte: reserved hash size (bits 7:6 = 11)');
+      }
 
       if (includeStructure) {
-        let pathLengthDescription = `Path contains ${pathLength} bytes`;
-        if (routeType === RouteType.Direct || routeType === RouteType.TransportDirect) {
-          pathLengthDescription = `For "Direct" packets, this contains routing instructions. ${pathLength} bytes of routing instructions (decreases as packet travels)`;
+        const hashDesc = pathHashSize > 1 ? ` × ${pathHashSize}-byte hashes (${pathByteLength} bytes)` : '';
+        let pathLengthDescription: string;
+        if (pathHopCount === 0) {
+          pathLengthDescription = pathHashSize > 1 ? `No path data (${pathHashSize}-byte hash mode)` : 'No path data';
+        } else if (routeType === RouteType.Direct || routeType === RouteType.TransportDirect) {
+          pathLengthDescription = `${pathHopCount} hops${hashDesc} of routing instructions (decreases as packet travels)`;
         } else if (routeType === RouteType.Flood || routeType === RouteType.TransportFlood) {
-          pathLengthDescription = `${pathLength} bytes showing route taken (increases as packet floods)`;
+          pathLengthDescription = `${pathHopCount} hops${hashDesc} showing route taken (increases as packet floods)`;
+        } else {
+          pathLengthDescription = `Path contains ${pathHopCount} hops${hashDesc}`;
         }
 
         segments.push({
@@ -176,24 +223,54 @@ export class MeshCorePacketDecoder {
           description: pathLengthDescription,
           startByte: offset,
           endByte: offset,
-          value: `0x${pathLength.toString(16).padStart(2, '0')}`
+          value: `0x${pathLenByte.toString(16).padStart(2, '0')}`,
+          headerBreakdown: {
+            fullBinary: pathLenByte.toString(2).padStart(8, '0'),
+            fields: [
+              {
+                bits: '6-7',
+                field: 'Hash Size',
+                value: `${pathHashSize} byte${pathHashSize > 1 ? 's' : ''} per hop`,
+                binary: ((pathLenByte >> 6) & 0x03).toString(2).padStart(2, '0')
+              },
+              {
+                bits: '0-5',
+                field: 'Hop Count',
+                value: `${pathHopCount} hop${pathHopCount !== 1 ? 's' : ''}`,
+                binary: (pathLenByte & 63).toString(2).padStart(6, '0')
+              }
+            ]
+          }
         });
       }
       offset += 1;
 
-      if (bytes.length < offset + pathLength) {
-        throw new Error('Packet too short for path data');
+      if (bytes.length < offset + pathByteLength) {
+        // with the reserved hash size the path length is meaningless, so report that instead
+        throw new Error(pathHashSize === 4
+          ? 'Invalid path length byte: reserved hash size (bits 7:6 = 11)'
+          : 'Packet too short for path data');
+      }
+      if (pathByteLength > MAX_PATH_SIZE) {
+        firmwareErrors.push(`Path too long (${pathByteLength} bytes, maximum ${MAX_PATH_SIZE})`);
       }
 
-      // convert path data to hex strings
-      const pathBytes = bytes.subarray(offset, offset + pathLength);
-      const path: string[] | null = pathLength > 0 ? Array.from(pathBytes).map(byteToHex) : null;
+      // convert path data to grouped hex strings (one entry per hop)
+      const pathBytes = bytes.subarray(offset, offset + pathByteLength);
+      let path: string[] | null = null;
+      if (pathHopCount > 0) {
+        path = [];
+        for (let i = 0; i < pathHopCount; i++) {
+          const hopBytes = pathBytes.subarray(i * pathHashSize, (i + 1) * pathHashSize);
+          path.push(bytesToHex(hopBytes));
+        }
+      }
 
-      if (includeStructure && pathLength > 0) {
+      if (includeStructure && pathHopCount > 0) {
         if (payloadType === PayloadType.Trace) {
-          // TRACE packets have SNR values in path
+          // TRACE packets have SNR values in path (always single-byte entries)
           const snrValues = [];
-          for (let i = 0; i < pathLength; i++) {
+          for (let i = 0; i < pathByteLength; i++) {
             const snrRaw = bytes[offset + i];
             const snrSigned = snrRaw > 127 ? snrRaw - 256 : snrRaw;
             const snrDb = snrSigned / 4.0;
@@ -203,31 +280,34 @@ export class MeshCorePacketDecoder {
             name: 'Path SNR Data',
             description: `SNR values collected during trace: ${snrValues.join(', ')}`,
             startByte: offset,
-            endByte: offset + pathLength - 1,
-            value: bytesToHex(bytes.slice(offset, offset + pathLength))
+            endByte: offset + pathByteLength - 1,
+            value: bytesToHex(bytes.slice(offset, offset + pathByteLength))
           });
         } else {
           let pathDescription = 'Routing path information';
           if (routeType === RouteType.Direct || routeType === RouteType.TransportDirect) {
-            pathDescription = 'Routing instructions (bytes are stripped at each hop as packet travels to destination)';
+            pathDescription = `Routing instructions (${pathHashSize}-byte hashes stripped at each hop as packet travels to destination)`;
           } else if (routeType === RouteType.Flood || routeType === RouteType.TransportFlood) {
-            pathDescription = 'Historical route taken (bytes are added as packet floods through network)';
+            pathDescription = `Historical route taken (${pathHashSize}-byte hashes added as packet floods through network)`;
           }
 
           segments.push({
             name: 'Path Data',
             description: pathDescription,
             startByte: offset,
-            endByte: offset + pathLength - 1,
-            value: bytesToHex(bytes.slice(offset, offset + pathLength))
+            endByte: offset + pathByteLength - 1,
+            value: bytesToHex(bytes.slice(offset, offset + pathByteLength))
           });
         }
       }
-      offset += pathLength;
+      offset += pathByteLength;
 
       // extract payload
       const payloadBytes = bytes.subarray(offset);
       const payloadHex = bytesToHex(payloadBytes);
+      if (payloadBytes.length > MAX_PACKET_PAYLOAD) {
+        firmwareErrors.push(`Payload too long (${payloadBytes.length} bytes, maximum ${MAX_PACKET_PAYLOAD})`);
+      }
 
       if (includeStructure && bytes.length > offset) {
         segments.push({
@@ -315,7 +395,36 @@ export class MeshCorePacketDecoder {
           delete result.segments;
         }
       } else if (payloadType === PayloadType.Path) {
-        decodedPayload = PathPayloadDecoder.decode(payloadBytes);
+        const result = PathPayloadDecoder.decode(payloadBytes, {
+          includeSegments: includeStructure,
+          segmentOffset: 0
+        });
+        decodedPayload = result;
+        if (result?.segments) {
+          payloadSegments.push(...result.segments);
+          delete result.segments;
+        }
+      } else if (payloadType === PayloadType.GroupData) {
+        const result = GroupDataPayloadDecoder.decode(payloadBytes, {
+          ...options,
+          includeSegments: includeStructure,
+          segmentOffset: 0
+        });
+        decodedPayload = result;
+        if (result?.segments) {
+          payloadSegments.push(...result.segments);
+          delete result.segments;
+        }
+      } else if (payloadType === PayloadType.Multipart) {
+        const result = MultipartPayloadDecoder.decode(payloadBytes, {
+          includeSegments: includeStructure,
+          segmentOffset: 0
+        });
+        decodedPayload = result;
+        if (result?.segments) {
+          payloadSegments.push(...result.segments);
+          delete result.segments;
+        }
       } else if (payloadType === PayloadType.TextMessage) {
         const result = TextMessagePayloadDecoder.decode(payloadBytes, {
           includeSegments: includeStructure,
@@ -338,6 +447,11 @@ export class MeshCorePacketDecoder {
         }
       }
 
+      // "too short" segments for an empty payload would have endByte < startByte
+      const validPayloadSegments = this.withoutEmptySegments(payloadSegments);
+      payloadSegments.length = 0;
+      payloadSegments.push(...validPayloadSegments);
+
       // if no segments were generated and we need structure, show basic payload info
       if (includeStructure && payloadSegments.length === 0 && bytes.length > offset) {
         payloadSegments.push({
@@ -351,21 +465,25 @@ export class MeshCorePacketDecoder {
 
       // calculate message hash
       const messageHash = this.calculateMessageHash(bytes, routeType, payloadType, payloadVersion);
+      const packetHash = this.calculatePacketHash(payloadType, pathLenByte, payloadBytes);
 
       const packet: DecodedPacket = {
         messageHash,
+        packetHash,
         routeType,
         payloadType,
         payloadVersion,
         transportCodes,
-        pathLength,
+        pathLength: pathHopCount,
+        pathHashSize,
         path,
         payload: {
           raw: payloadHex,
           decoded: decodedPayload
         },
         totalBytes: bytes.length,
-        isValid: true
+        isValid: firmwareErrors.length === 0,
+        ...(firmwareErrors.length > 0 ? { errors: firmwareErrors } : {})
       };
 
       const structure: PacketStructure = {
@@ -373,6 +491,7 @@ export class MeshCorePacketDecoder {
         totalBytes: bytes.length,
         rawHex: hexData.toUpperCase(),
         messageHash,
+        packetHash,
         payload: {
           segments: payloadSegments,
           hex: payloadHex,
@@ -386,10 +505,12 @@ export class MeshCorePacketDecoder {
     } catch (error) {
       const errorPacket: DecodedPacket = {
         messageHash: '',
+        packetHash: '',
         routeType: RouteType.Flood,
         payloadType: PayloadType.RawCustom,
         payloadVersion: PayloadVersion.Version1,
         pathLength: 0,
+        pathHashSize: 1,
         path: null,
         payload: { raw: '', decoded: null },
         totalBytes: bytes.length,
@@ -402,6 +523,7 @@ export class MeshCorePacketDecoder {
         totalBytes: bytes.length,
         rawHex: hexData.toUpperCase(),
         messageHash: '',
+        packetHash: '',
         payload: {
           segments: [],
           hex: '',
@@ -440,17 +562,21 @@ export class MeshCorePacketDecoder {
           // Update the payload with signature verification results
           result.packet.payload.decoded = verifiedAdvert;
           
-          // If the advertisement signature is invalid, mark the whole packet as invalid
-          if (!verifiedAdvert.isValid) {
+          // A forged advert signature marks the whole packet invalid (other payload problems
+          // stay on payload.decoded, consistent with decode())
+          if (verifiedAdvert.signatureValid === false) {
             result.packet.isValid = false;
-            result.packet.errors = verifiedAdvert.errors || ['Invalid advertisement signature'];
+            result.packet.errors = [
+              ...(result.packet.errors || []),
+              verifiedAdvert.signatureError || 'Invalid advertisement signature'
+            ];
           }
           
           // Update structure segments if needed
           if (includeStructure && verifiedAdvert.segments) {
-            result.structure.payload.segments = verifiedAdvert.segments;
-            delete verifiedAdvert.segments;
+            result.structure.payload.segments = this.withoutEmptySegments(verifiedAdvert.segments);
           }
+          delete verifiedAdvert.segments;
         }
       } catch (error) {
         console.error('Signature verification failed:', error);
@@ -464,7 +590,12 @@ export class MeshCorePacketDecoder {
    * Validate packet format without full decoding
    */
   static validate(hexData: string): ValidationResult {
-    const bytes = hexToBytes(hexData);
+    let bytes: Uint8Array;
+    try {
+      bytes = hexToBytes(hexData);
+    } catch (error) {
+      return { isValid: false, errors: [error instanceof Error ? error.message : 'Invalid hex string'] };
+    }
     const errors: string[] = [];
 
     if (bytes.length < 2) {
@@ -478,6 +609,10 @@ export class MeshCorePacketDecoder {
       // check transport codes
       const header = bytes[0];
       const routeType = header & 0x03;
+      const payloadVersion = (header >> 6) & 0x03;
+      if (payloadVersion > PayloadVersion.Version1) {
+        errors.push(`Unsupported payload version ${payloadVersion + 1} (firmware only accepts version 1)`);
+      }
       if (routeType === RouteType.TransportFlood || routeType === RouteType.TransportDirect) {
         if (bytes.length < offset + 4) {
           errors.push('Packet too short for transport codes');
@@ -489,18 +624,25 @@ export class MeshCorePacketDecoder {
       if (bytes.length < offset + 1) {
         errors.push('Packet too short for path length');
       } else {
-        const pathLength = bytes[offset];
+        const pathLenByte = bytes[offset];
+        const { hashSize, byteLength } = this.decodePathLenByte(pathLenByte);
         offset += 1;
-        
-        if (bytes.length < offset + pathLength) {
+
+        if (hashSize === 4) {
+          errors.push('Invalid path length byte: reserved hash size (bits 7:6 = 11)');
+        }
+        if (bytes.length < offset + byteLength) {
           errors.push('Packet too short for path data');
         }
-        offset += pathLength;
+        if (byteLength > MAX_PATH_SIZE) {
+          errors.push(`Path too long (${byteLength} bytes, maximum ${MAX_PATH_SIZE})`);
+        }
+        offset += byteLength;
       }
 
-      // check if we have payload data
-      if (offset >= bytes.length) {
-        errors.push('No payload data found');
+      // Dispatcher::tryParsePacket() accepts an empty payload; only an oversized one is rejected
+      if (bytes.length - offset > MAX_PACKET_PAYLOAD) {
+        errors.push(`Payload too long (${bytes.length - offset} bytes, maximum ${MAX_PACKET_PAYLOAD})`);
       }
 
     } catch (error) {
@@ -517,18 +659,18 @@ export class MeshCorePacketDecoder {
     // for TRACE packets, use the trace tag as hash
     if (payloadType === PayloadType.Trace && bytes.length >= 13) {
       let offset = 1;
-      
+
       // skip transport codes if present
       if (routeType === RouteType.TransportFlood || routeType === RouteType.TransportDirect) {
         offset += 4;
       }
-      
-      // skip path data
+
+      // skip path data (decode path_len byte for multi-byte hops)
       if (bytes.length > offset) {
-        const pathLen = bytes[offset];
-        offset += 1 + pathLen;
+        const { byteLength } = this.decodePathLenByte(bytes[offset]);
+        offset += 1 + byteLength;
       }
-      
+
       // extract trace tag
       if (bytes.length >= offset + 4) {
         const traceTag = (bytes[offset]) | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24);
@@ -539,16 +681,16 @@ export class MeshCorePacketDecoder {
     // for other packets, create hash from constant parts
     const constantHeader = (payloadType << 2) | (payloadVersion << 6);
     let offset = 1;
-    
+
     // skip transport codes if present
     if (routeType === RouteType.TransportFlood || routeType === RouteType.TransportDirect) {
       offset += 4;
     }
-    
-    // skip path data
+
+    // skip path data (decode path_len byte for multi-byte hops)
     if (bytes.length > offset) {
-      const pathLen = bytes[offset];
-      offset += 1 + pathLen;
+      const { byteLength } = this.decodePathLenByte(bytes[offset]);
+      offset += 1 + byteLength;
     }
     
     const payloadData = bytes.slice(offset);
@@ -563,6 +705,27 @@ export class MeshCorePacketDecoder {
     return numberToHex(hash, 8);
   }
 
+  private static withoutEmptySegments(segments: PayloadSegment[]): PayloadSegment[] {
+    return segments.filter(segment => segment.endByte >= segment.startByte);
+  }
+
+  /**
+   * Calculate the packet hash exactly as the firmware does in
+   * Packet::calculatePacketHash(): SHA256 over the payload type byte, then (TRACE only)
+   * the path_len field as a little-endian uint16, then the payload; truncated to
+   * MAX_HASH_SIZE (8) bytes. This is the value the firmware uses for duplicate detection.
+   */
+  static calculatePacketHash(payloadType: number, pathLenByte: number, payload: Uint8Array): string {
+    const prefix = payloadType === PayloadType.Trace
+      ? [payloadType & 0x0F, pathLenByte & 0xFF, 0x00]
+      : [payloadType & 0x0F];
+    const input = new Uint8Array(prefix.length + payload.length);
+    input.set(prefix, 0);
+    input.set(payload, prefix.length);
+    const digest = SHA256(enc.Hex.parse(bytesToHex(input))).toString(enc.Hex);
+    return digest.slice(0, MAX_HASH_SIZE * 2).toUpperCase();
+  }
+
   /**
    * Create a key store for decryption
    */
@@ -571,6 +734,18 @@ export class MeshCorePacketDecoder {
     nodeKeys?: Record<string, string>;
   }): CryptoKeyStore {
     return new MeshCoreKeyStore(initialKeys);
+  }
+
+  /**
+   * Decode a path_len byte into hash size, hop count, and total byte length.
+   * Firmware reference: Packet.h lines 79-83
+   *   Bits 7:6 = hash size selector: (path_len >> 6) + 1 = 1, 2, or 3 bytes per hop
+   *   Bits 5:0 = hop count (0-63)
+   */
+  private static decodePathLenByte(pathLenByte: number): { hashSize: number; hopCount: number; byteLength: number } {
+    const hashSize = (pathLenByte >> 6) + 1;
+    const hopCount = pathLenByte & 63;
+    return { hashSize, hopCount, byteLength: hopCount * hashSize };
   }
 
 }

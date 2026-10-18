@@ -24,6 +24,7 @@ export interface DecryptionResult {
   success: boolean;
   data?: any;
   error?: string;
+  authenticated?: boolean; // MAC verified, but the plaintext was malformed
 }
 
 export interface ValidationResult {

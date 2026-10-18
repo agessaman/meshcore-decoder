@@ -3,6 +3,7 @@
 
 import { ResponsePayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion } from '../../types/enums';
 import { byteToHex, bytesToHex } from '../../utils/hex';
 
@@ -15,12 +16,12 @@ export class ResponsePayloadDecoder {
       // - cipher_mac (2 bytes)
       // - ciphertext (rest of payload)
       
-      if (payload.length < 4) {
+      if (payload.length < 5) {
         const result: ResponsePayload & { segments?: PayloadSegment[] } = {
           type: PayloadType.Response,
           version: PayloadVersion.Version1,
           isValid: false,
-          errors: ['Response payload too short (minimum 4 bytes: dest + source + MAC)'],
+          errors: ['Response payload too short (minimum 5 bytes: dest + source + MAC + ciphertext)'],
           destinationHash: '',
           sourceHash: '',
           cipherMac: '',
@@ -31,7 +32,7 @@ export class ResponsePayloadDecoder {
         if (options?.includeSegments) {
           result.segments = [{
             name: 'Invalid Response Data',
-            description: 'Response payload too short (minimum 4 bytes required)',
+            description: 'Response payload too short (minimum 5 bytes required)',
             startByte: options.segmentOffset || 0,
             endByte: (options.segmentOffset || 0) + payload.length - 1,
             value: bytesToHex(payload)
@@ -96,10 +97,12 @@ export class ResponsePayloadDecoder {
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const result: ResponsePayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.Response,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         destinationHash,
         sourceHash,
         cipherMac,

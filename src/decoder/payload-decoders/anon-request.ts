@@ -3,6 +3,7 @@
 
 import { AnonRequestPayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
+import { cipherBlockError } from './cipher-checks';
 import { PayloadType, PayloadVersion } from '../../types/enums';
 import { byteToHex, bytesToHex } from '../../utils/hex';
 
@@ -15,12 +16,12 @@ export class AnonRequestPayloadDecoder {
       // - cipher_mac (2 bytes)
       // - ciphertext (rest of payload)
       
-      if (payload.length < 35) {
+      if (payload.length < 36) {
         const result: AnonRequestPayload & { segments?: PayloadSegment[] } = {
           type: PayloadType.AnonRequest,
           version: PayloadVersion.Version1,
           isValid: false,
-          errors: ['AnonRequest payload too short (minimum 35 bytes: dest + public key + MAC)'],
+          errors: ['AnonRequest payload too short (minimum 36 bytes: dest + public key + MAC + ciphertext)'],
           destinationHash: '',
           senderPublicKey: '',
           cipherMac: '',
@@ -31,7 +32,7 @@ export class AnonRequestPayloadDecoder {
         if (options?.includeSegments) {
           result.segments = [{
             name: 'Invalid AnonRequest Data',
-            description: 'AnonRequest payload too short (minimum 35 bytes required: 1 for dest hash + 32 for public key + 2 for MAC)',
+            description: 'AnonRequest payload too short (minimum 36 bytes required: 1 for dest hash + 32 for public key + 2 for MAC + ciphertext)',
             startByte: options.segmentOffset || 0,
             endByte: (options.segmentOffset || 0) + payload.length - 1,
             value: bytesToHex(payload)
@@ -95,18 +96,24 @@ export class AnonRequestPayloadDecoder {
           name: 'Ciphertext',
           description: `Encrypted message data (${payload.length - 35} bytes). Contains encrypted plaintext with this structure:
 • Timestamp (4 bytes) - send time as unix timestamp
-• Sync Timestamp (4 bytes) - room server only, sender's "sync messages SINCE x" timestamp  
-• Password (remaining bytes) - password for repeater/room`,
+Then, for a login:
+• Sync Timestamp (4 bytes) - room server only, sender's "sync messages SINCE x" timestamp
+• Password (remaining bytes) - password for repeater/room/sensor
+Or, for a repeater request (byte 4 = 0x01 regions, 0x02 owner info, 0x03 clock/status):
+• Request Type (1 byte)
+• Reply Path Length (1 byte) + Reply Path`,
           startByte: segmentOffset + offset,
           endByte: segmentOffset + payload.length - 1,
           value: ciphertext
         });
       }
 
+      const blockError = cipherBlockError(payload.length - offset);
       const result: AnonRequestPayload & { segments?: PayloadSegment[] } = {
         type: PayloadType.AnonRequest,
         version: PayloadVersion.Version1,
-        isValid: true,
+        isValid: !blockError,
+        ...(blockError ? { errors: [blockError] } : {}),
         destinationHash,
         senderPublicKey,
         cipherMac,

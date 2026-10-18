@@ -4,7 +4,7 @@
 import { TracePayload } from '../../types/payloads';
 import { PayloadSegment } from '../../types/packet';
 import { PayloadType, PayloadVersion } from '../../types/enums';
-import { numberToHex, byteToHex, bytesToHex } from '../../utils/hex';
+import { numberToHex, bytesToHex } from '../../utils/hex';
 
 export class TracePayloadDecoder {
   static decode(payload: Uint8Array, pathData?: string[] | null, options?: { includeSegments?: boolean; segmentOffset?: number }): TracePayload & { segments?: PayloadSegment[] } | null {
@@ -18,6 +18,7 @@ export class TracePayloadDecoder {
           traceTag: '00000000',
           authCode: 0,
           flags: 0,
+          pathHashSize: 1,
           pathHashes: []
         };
         
@@ -81,12 +82,15 @@ export class TracePayloadDecoder {
       }
       offset += 1;
 
+      // v1.11+: lower two flag bits are trace path hash size: 1 << n => 1, 2, 4, 8
+      // Note: This is distinct from the path hash size in the packet header added in 1.14
+      const pathHashSize = 1 << (flags & 0x03);
       // remaining bytes are path hashes (node hashes in the trace path)
       const pathHashes: string[] = [];
       const pathHashesStart = offset;
-      while (offset < payload.length) {
-        pathHashes.push(byteToHex(payload[offset]));
-        offset++;
+      while (offset + pathHashSize <= payload.length) {
+        pathHashes.push(bytesToHex(payload.subarray(offset, offset + pathHashSize)));
+        offset += pathHashSize;
       }
 
       if (options?.includeSegments && pathHashes.length > 0) {
@@ -95,8 +99,19 @@ export class TracePayloadDecoder {
           name: 'Path Hashes',
           description: `Node hashes in trace path: ${pathHashesDisplay}`,
           startByte: segmentOffset + pathHashesStart,
+          endByte: segmentOffset + offset - 1,
+          value: bytesToHex(payload.slice(pathHashesStart, offset))
+        });
+      }
+
+      // firmware does not require the trailing bytes to align to the hash size
+      if (options?.includeSegments && offset < payload.length) {
+        segments.push({
+          name: 'Trailing Path Bytes',
+          description: `${payload.length - offset} byte(s) that do not form a complete ${pathHashSize}-byte hash`,
+          startByte: segmentOffset + offset,
           endByte: segmentOffset + payload.length - 1,
-          value: bytesToHex(payload.slice(pathHashesStart))
+          value: bytesToHex(payload.slice(offset))
         });
       }
 
@@ -118,6 +133,7 @@ export class TracePayloadDecoder {
         traceTag,
         authCode,
         flags,
+        pathHashSize,
         pathHashes,
         snrValues
       };
@@ -136,6 +152,7 @@ export class TracePayloadDecoder {
         traceTag: '00000000',
         authCode: 0,
         flags: 0,
+        pathHashSize: 1,
         pathHashes: []
       };
     }
@@ -143,9 +160,9 @@ export class TracePayloadDecoder {
 
 
   private static readUint32LE(buffer: Uint8Array, offset: number): number {
-    return buffer[offset] |
+    return (buffer[offset] |
       (buffer[offset + 1] << 8) |
       (buffer[offset + 2] << 16) |
-      (buffer[offset + 3] << 24);
+      (buffer[offset + 3] << 24)) >>> 0;
   }
 }

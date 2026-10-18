@@ -95,8 +95,12 @@ export class AnonRequestPayloadDecoder {
           name: 'Ciphertext',
           description: `Encrypted message data (${payload.length - 35} bytes). Contains encrypted plaintext with this structure:
 • Timestamp (4 bytes) - send time as unix timestamp
-• Sync Timestamp (4 bytes) - room server only, sender's "sync messages SINCE x" timestamp  
-• Password (remaining bytes) - password for repeater/room`,
+Then, for a login:
+• Sync Timestamp (4 bytes) - room server only, sender's "sync messages SINCE x" timestamp
+• Password (remaining bytes) - password for repeater/room/sensor
+Or, for a repeater request (byte 4 = 0x01 regions, 0x02 owner info, 0x03 clock/status):
+• Request Type (1 byte)
+• Reply Path Length (1 byte) + Reply Path`,
           startByte: segmentOffset + offset,
           endByte: segmentOffset + payload.length - 1,
           value: ciphertext

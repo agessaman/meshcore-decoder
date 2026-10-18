@@ -165,9 +165,9 @@ export class TracePayloadDecoder {
 
 
   private static readUint32LE(buffer: Uint8Array, offset: number): number {
-    return buffer[offset] |
+    return (buffer[offset] |
       (buffer[offset + 1] << 8) |
       (buffer[offset + 2] << 16) |
-      (buffer[offset + 3] << 24);
+      (buffer[offset + 3] << 24)) >>> 0;
   }
 }

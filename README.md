@@ -42,7 +42,7 @@ const packet: DecodedPacket = MeshCoreDecoder.decode(hexData);
 
 console.log(`Route Type: ${Utils.getRouteTypeName(packet.routeType)}`);
 console.log(`Payload Type: ${Utils.getPayloadTypeName(packet.payloadType)}`);
-console.log(`Message Hash: ${packet.messageHash}`);
+console.log(`Packet Hash: ${packet.packetHash}`); // matches firmware duplicate detection
 
 if (packet.payloadType === PayloadType.Advert && packet.payload.decoded) {
   const advert: AdvertPayload = packet.payload.decoded as AdvertPayload;
@@ -72,10 +72,12 @@ console.log(JSON.stringify(packet, null, 2));
 ```json
 {
   "messageHash": "F9C060FE",
+  "packetHash": "75B10CB12C391078",
   "routeType": 1,
   "payloadType": 4,
   "payloadVersion": 0,
   "pathLength": 0,
+  "pathHashSize": 1,
   "path": null,
   "payload": {
     "raw": "7E7662676F7F0850A8A355BAAFBFC1EB7B4174C340442D7D7161C9474A2C94006CE7CF682E58408DD8FCC51906ECA98EBF94A037886BDADE7ECD09FD92B839491DF3809C9454F5286D1D3370AC31A34593D569E9A042A3B41FD331DFFB7E18599CE1E60992A076D50238C5B8F85757375354522F50756765744D65736820436F75676172",
@@ -91,6 +93,8 @@ console.log(JSON.stringify(packet, null, 2));
         "deviceRole": 2,
         "hasLocation": true,
         "hasName": true,
+        "hasFeature1": false,
+        "hasFeature2": false,
         "location": {
           "latitude": 47.543968,
           "longitude": -122.108616
@@ -114,12 +118,13 @@ console.log(JSON.stringify(packet, null, 2));
 | `0x03` | Acknowledgment | Acknowledgment | ✅ | N/A | ✅ |
 | `0x04` | Node advertisement | Node advertisement | ✅ | N/A | ✅ |
 | `0x05` | Group text message | Group text message | ✅ | ✅ | ✅ |
-| `0x06` | Group datagram | Group datagram | 🚧 | 🚧 | 🚧 |
+| `0x06` | Group datagram | Group datagram | ✅ | ✅ | ✅ |
 | `0x07` | Anonymous request | Anonymous request | ✅ | 🚧 | ✅ |
-| `0x08` | Returned path | Returned path | ✅ | N/A | ✅ |
-| `0x09` | Trace | Trace a path, collecting SNI for each hop | ✅ | N/A | ✅ |
-| `0x0A` | Multi-part packet | Packet is part of a sequence of packets | 🚧 | 🚧 | 🚧 |
-| `0x0F` | Custom packet | Custom packet (raw bytes, custom encryption) | 🚧 | 🚧 | 🚧 |
+| `0x08` | Returned path | Returned path (encrypted, dest/source hashes + MAC) | ✅ | 🚧 | ✅ |
+| `0x09` | Trace | Trace a path, collecting SNR for each hop | ✅ | N/A | ✅ |
+| `0x0A` | Multi-part packet | Packet is part of a sequence of packets (multipart ACKs decoded) | ✅ | N/A | ✅ |
+| `0x0B` | Control | Control/discovery packet (DISCOVER_REQ / DISCOVER_RESP) | ✅ | N/A | ✅ |
+| `0x0F` | Custom packet | Custom packet (raw bytes, custom encryption) | Raw only | N/A | Raw only |
 
 **Legend:**
 - ✅ Fully implemented
@@ -127,6 +132,17 @@ console.log(JSON.stringify(packet, null, 2));
 - `-` Not applicable
 
 For some packet types not yet supported here, they may not exist in MeshCore yet or I have yet to observe these packet types on the mesh.
+
+### Firmware Compatibility
+
+The decoder follows the MeshCore firmware (`src/Packet.*`, `src/Mesh.cpp`, `src/Dispatcher.cpp`):
+
+- `packetHash` is computed exactly like `Packet::calculatePacketHash()` (SHA-256 over the payload type, the `path_len` field for TRACE packets, and the payload; first 8 bytes). `messageHash` is kept for backwards compatibility but is specific to this library.
+- Packets the firmware would drop are still decoded but marked `isValid: false` with an explanation in `errors`: payload version above 1, path longer than 64 bytes, payload longer than 184 bytes, or the reserved path hash size.
+- `path_len` encodes the per-hop hash size (1, 2 or 3 bytes) in bits 6-7 and the hop count in bits 0-5; `pathHashSize` reports the size.
+- PATH payloads are encrypted like text messages. The decoder exposes the destination/source hashes, MAC and ciphertext; use `PathPayloadDecoder.parsePlaintext()` to parse a decrypted returned path.
+- Advert signatures cover only the first 32 bytes of app data (`MAX_ADVERT_DATA_SIZE`), and any bytes past that are not part of the node name. Device roles outside 1-4 are reported as-is rather than as Chat Node.
+- 128-bit and 256-bit channel secrets are both supported for GroupText and GroupData decryption.
 
 ## Decryption Support
 

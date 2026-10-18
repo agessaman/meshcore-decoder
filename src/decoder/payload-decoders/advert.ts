@@ -8,6 +8,11 @@ import { bytesToHex } from '../../utils/hex';
 import { getDeviceRoleName } from '../../utils/enum-names';
 import { Ed25519SignatureVerifier } from '../../crypto/ed25519-verifier';
 
+// firmware MeshCore.h MAX_ADVERT_DATA_SIZE
+const MAX_ADVERT_DATA_SIZE = 32;
+// public_key(32) + timestamp(4) + signature(64)
+const APP_DATA_START = 100;
+
 export class AdvertPayloadDecoder {
   static decode(payload: Uint8Array, options?: { includeSegments?: boolean; segmentOffset?: number }): AdvertPayload & { segments?: PayloadSegment[] } | null {
     try {
@@ -23,9 +28,11 @@ export class AdvertPayloadDecoder {
           signature: '',
           appData: {
             flags: 0,
-            deviceRole: DeviceRole.ChatNode,
+            deviceRole: DeviceRole.Unknown,
             hasLocation: false,
-            hasName: false
+            hasName: false,
+            hasFeature1: false,
+            hasFeature2: false
           }
         };
         
@@ -89,7 +96,8 @@ export class AdvertPayloadDecoder {
         const binaryStr = flags.toString(2).padStart(8, '0');
         const deviceRole = this.parseDeviceRole(flags);
         const roleName = getDeviceRoleName(deviceRole);
-        const flagDesc = ` | Bits 0-3 (Role): ${roleName} | Bit 4 (Location): ${!!(flags & AdvertFlags.HasLocation) ? 'Yes' : 'No'} | Bit 7 (Name): ${!!(flags & AdvertFlags.HasName) ? 'Yes' : 'No'}`;
+        const yn = (mask: number) => (flags & mask) ? 'Yes' : 'No';
+        const flagDesc = ` | Bits 0-3 (Role): ${roleName} | Bit 4 (Location): ${yn(AdvertFlags.HasLocation)} | Bit 5 (Feature 1): ${yn(AdvertFlags.HasFeature1)} | Bit 6 (Feature 2): ${yn(AdvertFlags.HasFeature2)} | Bit 7 (Name): ${yn(AdvertFlags.HasName)}`;
         segments.push({
           name: 'App Flags',
           description: `Binary: ${binaryStr}${flagDesc}`,
@@ -111,50 +119,82 @@ export class AdvertPayloadDecoder {
           flags,
           deviceRole: this.parseDeviceRole(flags),
           hasLocation: !!(flags & AdvertFlags.HasLocation),
-          hasName: !!(flags & AdvertFlags.HasName)
+          hasName: !!(flags & AdvertFlags.HasName),
+          hasFeature1: !!(flags & AdvertFlags.HasFeature1),
+          hasFeature2: !!(flags & AdvertFlags.HasFeature2)
         }
       };
+      const appDataErrors: string[] = [];
 
       let offset = currentOffset;
 
-      // location data (if HasLocation flag is set)
-      if (flags & AdvertFlags.HasLocation && payload.length >= offset + 8) {
-        const lat = this.readInt32LE(payload, offset) / 1000000;
-        const lon = this.readInt32LE(payload, offset + 4) / 1000000;
-        advert.appData.location = {
-          latitude: Math.round(lat * 1000000) / 1000000, // Keep precision
-          longitude: Math.round(lon * 1000000) / 1000000
-        };
-        
-        if (options?.includeSegments) {
-          segments.push({
-            name: 'Latitude',
-            description: `${lat}° (${lat})`,
-            startByte: segmentOffset + offset,
-            endByte: segmentOffset + offset + 3,
-            value: bytesToHex(payload.subarray(offset, offset + 4))
-          });
+      // optional fields in firmware AdvertDataParser order: lat/lon, feature 1, feature 2
+      if (flags & AdvertFlags.HasLocation) {
+        if (payload.length >= offset + 8) {
+          const lat = this.readInt32LE(payload, offset) / 1000000;
+          const lon = this.readInt32LE(payload, offset + 4) / 1000000;
+          advert.appData.location = {
+            latitude: Math.round(lat * 1000000) / 1000000,
+            longitude: Math.round(lon * 1000000) / 1000000
+          };
 
-          segments.push({
-            name: 'Longitude',
-            description: `${lon}° (${lon})`,
-            startByte: segmentOffset + offset + 4,
-            endByte: segmentOffset + offset + 7,
-            value: bytesToHex(payload.subarray(offset + 4, offset + 8))
-          });
+          if (options?.includeSegments) {
+            segments.push({
+              name: 'Latitude',
+              description: `${lat}° (${lat})`,
+              startByte: segmentOffset + offset,
+              endByte: segmentOffset + offset + 3,
+              value: bytesToHex(payload.subarray(offset, offset + 4))
+            });
+
+            segments.push({
+              name: 'Longitude',
+              description: `${lon}° (${lon})`,
+              startByte: segmentOffset + offset + 4,
+              endByte: segmentOffset + offset + 7,
+              value: bytesToHex(payload.subarray(offset + 4, offset + 8))
+            });
+          }
+        } else {
+          appDataErrors.push('App data too short for location');
         }
-        
         offset += 8;
       }
 
-      // skip feature fields for now (HasFeature1, HasFeature2)
-      if (flags & AdvertFlags.HasFeature1) offset += 2;
-      if (flags & AdvertFlags.HasFeature2) offset += 2;
+      for (const [mask, key, label] of [
+        [AdvertFlags.HasFeature1, 'feature1', 'Feature 1'],
+        [AdvertFlags.HasFeature2, 'feature2', 'Feature 2']
+      ] as const) {
+        if (!(flags & mask)) continue;
+        if (payload.length >= offset + 2) {
+          const value = payload[offset] | (payload[offset + 1] << 8);
+          advert.appData[key] = value;
+          if (options?.includeSegments) {
+            segments.push({
+              name: label,
+              description: `Reserved for future use: ${value} (0x${value.toString(16).padStart(4, '0')})`,
+              startByte: segmentOffset + offset,
+              endByte: segmentOffset + offset + 1,
+              value: bytesToHex(payload.subarray(offset, offset + 2))
+            });
+          }
+        } else {
+          appDataErrors.push(`App data too short for ${label.toLowerCase()}`);
+        }
+        offset += 2;
+      }
 
-      // name data (if HasName flag is set)
-      if (flags & AdvertFlags.HasName && payload.length > offset) {
-        const nameBytes = payload.subarray(offset);
-        const rawName = new TextDecoder('utf-8').decode(nameBytes).replace(/\0.*$/, '');
+      if (appDataErrors.length > 0) {
+        advert.isValid = false;
+        advert.errors = appDataErrors;
+      }
+
+      // name data (if HasName flag is set); firmware caps app_data at
+      // MAX_ADVERT_DATA_SIZE bytes, so anything beyond that is not part of the name
+      const appDataEnd = Math.min(payload.length, APP_DATA_START + MAX_ADVERT_DATA_SIZE);
+      if (flags & AdvertFlags.HasName && appDataEnd > offset) {
+        const nameBytes = payload.subarray(offset, appDataEnd);
+        const rawName = new TextDecoder('utf-8').decode(nameBytes).replace(/\0[\s\S]*$/, '');
         advert.appData.name = this.sanitizeControlCharacters(rawName) || rawName;
         
         if (options?.includeSegments) {
@@ -162,10 +202,20 @@ export class AdvertPayloadDecoder {
             name: 'Node Name',
             description: `Node name: "${advert.appData.name}"`,
             startByte: segmentOffset + offset,
-            endByte: segmentOffset + payload.length - 1,
+            endByte: segmentOffset + appDataEnd - 1,
             value: bytesToHex(nameBytes)
           });
         }
+      }
+
+      if (options?.includeSegments && payload.length > appDataEnd && appDataEnd >= offset) {
+        segments.push({
+          name: 'Excess App Data',
+          description: `Bytes beyond the ${MAX_ADVERT_DATA_SIZE}-byte app data limit (ignored by firmware)`,
+          startByte: segmentOffset + appDataEnd,
+          endByte: segmentOffset + payload.length - 1,
+          value: bytesToHex(payload.subarray(appDataEnd))
+        });
       }
 
       if (options?.includeSegments) {
@@ -184,9 +234,11 @@ export class AdvertPayloadDecoder {
         signature: '',
         appData: {
           flags: 0,
-          deviceRole: DeviceRole.ChatNode,
+          deviceRole: DeviceRole.Unknown,
           hasLocation: false,
-          hasName: false
+          hasName: false,
+          hasFeature1: false,
+          hasFeature2: false
         }
       };
     }
@@ -205,8 +257,8 @@ export class AdvertPayloadDecoder {
     // Perform signature verification
     try {
       // Extract app_data from the payload (everything after public_key + timestamp + signature)
-      const appDataStart = 32 + 4 + 64; // public_key + timestamp + signature
-      const appDataBytes = payload.subarray(appDataStart);
+      // firmware only signs the first MAX_ADVERT_DATA_SIZE (32) bytes of app_data
+      const appDataBytes = payload.subarray(APP_DATA_START, APP_DATA_START + MAX_ADVERT_DATA_SIZE);
       const appDataHex = bytesToHex(appDataBytes);
 
       const signatureValid = await Ed25519SignatureVerifier.verifyAdvertisementSignature(
@@ -239,22 +291,17 @@ export class AdvertPayloadDecoder {
     return advert;
   }
 
+  // ADV_TYPE_* is the lower 4 bits; 0 is ADV_TYPE_NONE and 5..15 are reserved
+  // for future types, so the raw value is preserved rather than guessed.
   private static parseDeviceRole(flags: number): DeviceRole {
-    const roleValue = flags & 0x0F;
-    switch (roleValue) {
-      case 0x01: return DeviceRole.ChatNode;
-      case 0x02: return DeviceRole.Repeater;
-      case 0x03: return DeviceRole.RoomServer;
-      case 0x04: return DeviceRole.Sensor;
-      default: return DeviceRole.ChatNode;
-    }
+    return (flags & 0x0F) as DeviceRole;
   }
 
   private static readUint32LE(buffer: Uint8Array, offset: number): number {
-    return buffer[offset] |
+    return (buffer[offset] |
       (buffer[offset + 1] << 8) |
       (buffer[offset + 2] << 16) |
-      (buffer[offset + 3] << 24);
+      (buffer[offset + 3] << 24)) >>> 0;
   }
 
   private static readInt32LE(buffer: Uint8Array, offset: number): number {

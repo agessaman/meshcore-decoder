@@ -12,11 +12,14 @@ export type {
   AdvertPayload, 
   TracePayload, 
   GroupTextPayload, 
+  GroupDataPayload,
   RequestPayload, 
   TextMessagePayload, 
   AnonRequestPayload, 
   AckPayload, 
   PathPayload,
+  PathPlaintext,
+  MultipartPayload,
   ResponsePayload,
   ControlPayloadBase,
   ControlDiscoverReqPayload,
@@ -34,6 +37,8 @@ export {
   DeviceRole, 
   AdvertFlags, 
   RequestType,
+  AnonRequestType,
+  TextType,
   ControlSubType
 } from './types/enums';
 
@@ -58,8 +63,11 @@ export {
   getPayloadVersionName, 
   getDeviceRoleName, 
   getRequestTypeName,
+  getAnonRequestTypeName,
+  getTextTypeName,
   getControlSubTypeName
 } from './utils/enum-names';
+export { PathPayloadDecoder } from './decoder/payload-decoders/path';
 export { 
   createAuthToken, 
   verifyAuthToken, 

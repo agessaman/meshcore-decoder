@@ -104,6 +104,8 @@ export class GroupTextPayloadDecoder {
             groupText.decrypted = {
               timestamp: decryptionResult.data.timestamp,
               flags: decryptionResult.data.flags,
+              txtType: decryptionResult.data.txtType,
+              attempt: decryptionResult.data.attempt,
               sender: decryptionResult.data.sender,
               message: decryptionResult.data.message
             };
